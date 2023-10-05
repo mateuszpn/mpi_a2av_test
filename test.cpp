@@ -1,52 +1,91 @@
 #include "mpi.h"
 
+#include "CL/sycl.hpp"
+
 #include <assert.h>
+#include <iostream>
 #include <iterator>
-#include <ranges>
 #include <vector>
 
-int comm_size_;
+#define USE_SYCL
 
-template <typename valT>
-void alltoallv(std::vector<valT> &sendbuf,
-               const std::vector<std::size_t> &sendcnt,
-               const std::vector<std::size_t> &senddsp,
-               std::vector<valT> &recvbuf,
-               const std::vector<std::size_t> &recvcnt,
-               const std::vector<std::size_t> &recvdsp) {
+int comm_size_, comm_rank_;
 
-  assert(std::size(sendcnt) == comm_size_);
-  assert(std::size(senddsp) == comm_size_);
-  assert(std::size(recvcnt) == comm_size_);
-  assert(std::size(recvdsp) == comm_size_);
+template <typename T>
+std::vector<T> generate_random(std::size_t n, std::size_t bound = 25) {
+  std::vector<T> v;
+  v.reserve(n);
 
-  std::vector<int> _sendcnt(comm_size_);
-  std::vector<int> _senddsp(comm_size_);
-  std::vector<int> _recvcnt(comm_size_);
-  std::vector<int> _recvdsp(comm_size_);
-
-  for (int i = 0; i < comm_size_; i++) {
-    _sendcnt[i] = sendcnt[i] * sizeof(valT);
-    _senddsp[i] = senddsp[i] * sizeof(valT);
-    _recvcnt[i] = recvcnt[i] * sizeof(valT);
-    _recvdsp[i] = recvcnt[i] * sizeof(valT);
+  for (std::size_t i = 0; i < n; i++) {
+    auto r = lrand48() % bound;
+    v.push_back(r);
   }
+  return v;
+}
 
-  MPI_Alltoallv(std::data(sendbuf), std::data(_sendcnt), std::data(_senddsp),
-                MPI_BYTE, std::data(recvbuf), std::data(_recvcnt),
-                std::data(_recvdsp), MPI_BYTE, MPI_COMM_WORLD);
+#ifdef USE_SYCL
+template <typename T>
+using V = std::vector<T, sycl::usm_allocator<T, sycl::usm::alloc::shared>>;
+#else
+template <typename T> using V = std::vector<T>;
+#endif
+
+template <typename T>
+void alltoallv(const V<T> &sendbuf, const std::vector<int> &sendcnt,
+               const std::vector<int> &senddsp, V<T> &recvbuf,
+               const std::vector<int> &recvcnt,
+               const std::vector<int> &recvdsp) {
+
+  assert(std::size(sendcnt) == comm_size_ && "Bad vector size");
+  assert(std::size(senddsp) == comm_size_ && "Bad vector size");
+  assert(std::size(recvcnt) == comm_size_ && "Bad vector size");
+  assert(std::size(recvdsp) == comm_size_ && "Bad vector size");
+
+  std::cout << "MPI_Alltoallv()" << std::endl;
+
+  MPI_Alltoallv(std::data(sendbuf), std::data(sendcnt), std::data(senddsp),
+                MPI_BYTE, std::data(recvbuf), std::data(recvcnt),
+                std::data(recvdsp), MPI_BYTE, MPI_COMM_WORLD);
 }
 
 int main(int argc, char **argv) {
   using T = int;
-  constexpr std::size_t size = 2000000;
+  std::cout << "main()" << std::endl;
+
   MPI_Init(&argc, &argv);
-
   MPI_Comm_size(MPI_COMM_WORLD, &comm_size_);
+  MPI_Comm_rank(MPI_COMM_WORLD, &comm_rank_);
 
-  std::vector<T> v(size / comm_size_);
-  std::vector<int> sendcnt({125146, 124922, 125145, 124787});
-  std::vector<int> senddsp({0, 125146, 250068, 375213});
-  std::vector<int> recvcnt({125025, 124785, 125145, 125296});
-  std::vector<int> recvdsp({0, 125025, 249810, 374955});
+  int size = 135167;
+
+  std::cout << comm_rank_ << ": MPI Initialized, size " << comm_size_
+            << std::endl;
+  std::cout << comm_rank_ << ": vector size " << size << std::endl;
+
+  std::vector<int> sendcnt(comm_size_), senddsp(comm_size_),
+      recvcnt(comm_size_), recvdsp(comm_size_);
+
+  sendcnt = {size, size, size, size};
+  senddsp = {0, size, 2 * size, 3 * size};
+  recvcnt = {size, size, size, size};
+  recvdsp = {0, size, 2 * size, 3 * size};
+
+  std::size_t recvsize = recvcnt[0] + recvcnt[1] + recvcnt[2] + recvcnt[3];
+
+#ifdef USE_SYCL
+  std::cout << "With SYCL alloc" << std::endl;
+  sycl::queue q;
+  sycl::usm_allocator<T, sycl::usm::alloc::shared> alloc(q);
+  std::vector<T, decltype(alloc)> vs(size, alloc);
+  std::vector<T, decltype(alloc)> vr(recvsize, alloc);
+#else
+  std::cout << "With default alloc" << std::endl;
+  std::vector<T> vs = generate_random<T>(size, 1000);
+  std::vector<T> vr(recvsize);
+#endif
+
+  std::cout << "alltoallv()" << std::endl;
+  alltoallv(vs, sendcnt, senddsp, vr, recvcnt, recvdsp);
+  std::cout << "end" << std::endl;
+  MPI_Finalize();
 }
