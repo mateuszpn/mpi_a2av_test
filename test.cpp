@@ -56,7 +56,13 @@ int main(int argc, char **argv) {
   MPI_Comm_size(MPI_COMM_WORLD, &comm_size_);
   MPI_Comm_rank(MPI_COMM_WORLD, &comm_rank_);
 
-  int size = 135167;
+  sycl::queue q(sycl::gpu_selector_v);
+  std::cout << comm_rank_ << ": Running on: "
+            << q.get_device().get_info<sycl::info::device::name>() << std::endl;
+
+  // int size = 135167;
+  const int fullsize = 8000000;
+  int size = fullsize / comm_size_;
 
   std::cout << comm_rank_ << ": MPI Initialized, size " << comm_size_
             << std::endl;
@@ -65,16 +71,23 @@ int main(int argc, char **argv) {
   std::vector<int> sendcnt(comm_size_), senddsp(comm_size_),
       recvcnt(comm_size_), recvdsp(comm_size_);
 
-  sendcnt = {size, size, size, size};
-  senddsp = {0, size, 2 * size, 3 * size};
-  recvcnt = {size, size, size, size};
-  recvdsp = {0, size, 2 * size, 3 * size};
+  std::size_t recvsize = 0;
 
-  std::size_t recvsize = recvcnt[0] + recvcnt[1] + recvcnt[2] + recvcnt[3];
+  for (int i = 0; i < comm_size_; i++) {
+    sendcnt[i] = recvcnt[i] = size;
+    senddsp[i] = recvdsp[i] = i * size;
+    recvsize += recvcnt[i];
+  }
+
+  // sendcnt = {size, size, size, size};
+  // senddsp = {0, size, 2 * size, 3 * size};
+  // recvcnt = {size, size, size, size};
+  // recvdsp = {0, size, 2 * size, 3 * size};
+
+  // std::size_t recvsize = recvcnt[0] + recvcnt[1] + recvcnt[2] + recvcnt[3];
 
 #ifdef USE_SYCL
   std::cout << "With SYCL alloc" << std::endl;
-  sycl::queue q;
   sycl::usm_allocator<T, sycl::usm::alloc::shared> alloc(q);
   std::vector<T, decltype(alloc)> vs(size, alloc);
   std::vector<T, decltype(alloc)> vr(recvsize, alloc);
